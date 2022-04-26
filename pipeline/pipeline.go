@@ -55,20 +55,30 @@ func Filter[T any](ctx context.Context, filter func(T) bool, input <-chan T) (
 
 // Limit
 func Limit[T any](ctx context.Context, n int, input <-chan T) <-chan T {
+	if n == 0 {
+		return nil
+	}
+
 	c := make(chan T)
 
-	go func(n int, in <-chan T, out chan<- T) {
+	go func(ctx context.Context, n int, out chan<- T, in <-chan T) {
 		defer close(out)
 
-		for i := 0; i < n; i++ {
-			v, ok := <-in
-			if !ok {
+		var i int
+
+		for v := range in {
+			select {
+			case <-ctx.Done():
 				return
+			case out <- v:
+				i++
 			}
 
-			out <- v
+			if i >= n {
+				return
+			}
 		}
-	}(n, input, c)
+	}(ctx, n, c, OrDone(ctx, input))
 
 	return c
 }
