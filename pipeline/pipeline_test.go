@@ -9,25 +9,39 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
 )
 
-func testGen(ctx context.Context, values []int) <-chan int {
-	c := make(chan int)
+func TestPipeline(t *testing.T) {
+	t.Parallel()
 
-	go func(ctx context.Context, out chan<- int, v []int) {
-		defer close(out)
+	suite.Run(t, new(PipeTestSuite))
+}
 
-		for _, i := range v {
-			select {
-			case <-ctx.Done():
-				return
-			case out <- i:
-			}
-		}
-	}(ctx, c, values)
+type PipeTestSuite struct {
+	suite.Suite
 
-	return c
+	Ctx    context.Context
+	Cancel context.CancelFunc
+	Nums   []int
+}
+
+func (s *PipeTestSuite) SetupSuite() {
+	s.Ctx, s.Cancel = context.WithCancel(context.Background())
+
+	s.Nums = make([]int, 100)
+
+	for i := range s.Nums {
+		s.Nums[i] = i - len(s.Nums)/2
+	}
+}
+
+func (s *PipeTestSuite) TearDownSuite() {
+	s.Cancel()
+}
+
+func (s PipeTestSuite) IntPipe(ctx context.Context) <-chan int {
+	return ToChan(ctx, s.Nums...)
 }
 
 func testToSlice(wg *sync.WaitGroup, out *[]int, in <-chan int) {
@@ -42,8 +56,8 @@ func testToSlice(wg *sync.WaitGroup, out *[]int, in <-chan int) {
 	*out = result
 }
 
-func testTeeHelper(t *testing.T, expect []int, chans []<-chan int) {
-	t.Helper()
+func testTeeHelper(s *suite.Suite, expect []int, chans []<-chan int) {
+	s.T().Helper()
 
 	r := make([][]int, len(chans))
 	wg := &sync.WaitGroup{}
@@ -56,13 +70,13 @@ func testTeeHelper(t *testing.T, expect []int, chans []<-chan int) {
 	wg.Wait()
 
 	for _, result := range r {
-		assert.Len(t, result, len(expect))
-		assert.Equal(t, expect, result)
+		s.Len(result, len(expect))
+		s.Equal(expect, result)
 	}
 }
 
-func testTeeCancel(t *testing.T, num int, d1, d2 time.Duration) {
-	t.Helper()
+func testTeeCancel(s *suite.Suite, num int, d1, d2 time.Duration) {
+	s.T().Helper()
 
 	var (
 		pipe, c1, c2 <-chan int
@@ -107,43 +121,49 @@ func testTeeCancel(t *testing.T, num int, d1, d2 time.Duration) {
 
 	wg.Wait()
 
-	assert.LessOrEqual(t, len(r1), num/2+1)
-	assert.LessOrEqual(t, len(r2), num/2+1)
-	assert.GreaterOrEqual(t, len(r1), num/2-1)
-	assert.GreaterOrEqual(t, len(r2), num/2-1)
+	s.LessOrEqual(len(r1), num/2+2)
+	s.LessOrEqual(len(r2), num/2+2)
+	s.GreaterOrEqual(len(r1), num/2-2)
+	s.GreaterOrEqual(len(r2), num/2-2)
 }
 
-func TestAccumulate(t *testing.T) {
-	t.Parallel()
+func (s *PipeTestSuite) TestAccumulate() {
+	sum := func(sum, val int) (int, error) {
+		if val > 0 {
+			return sum + val, nil
+		}
 
-	ctx := context.Background()
-	mul := func(a, b int) (int, error) { return a * b, nil }
-	numbers := make([]int, 6)
-	expect := 1
-
-	for i := range numbers {
-		numbers[i] = i + 1
-		expect *= i + 1
+		return sum - val, nil
 	}
 
-	t.Run("factorial", func(t *testing.T) {
-		t.Parallel()
+	abs := func(a int) int {
+		if a > 0 {
+			return a
+		}
 
-		pipe := testGen(ctx, numbers)
+		return -a
+	}
 
-		result, err := Accumulate(ctx, mul, 1, pipe)
-		assert.NoError(t, err)
-		assert.Equal(t, expect, result)
+	var expected int
+
+	for _, val := range s.Nums {
+		expected += abs(val)
+	}
+
+	s.Run("sum", func() {
+		pipe := s.IntPipe(s.Ctx)
+
+		result, err := Accumulate(s.Ctx, sum, 0, pipe)
+		s.NoError(err)
+		s.Equal(expected, result)
 	})
 
-	t.Run("stop on error", func(t *testing.T) {
-		t.Parallel()
-
-		ctx, cancel := context.WithCancel(ctx)
+	s.Run("stop on error", func() {
+		ctx, cancel := context.WithCancel(s.Ctx)
 
 		defer cancel()
 
-		pipe := testGen(ctx, numbers)
+		pipe := s.IntPipe(ctx)
 
 		result, err := Accumulate(ctx,
 			func(v int, t int) (int, error) {
@@ -154,18 +174,16 @@ func TestAccumulate(t *testing.T) {
 				return v * t, nil
 			}, 1, pipe)
 
-		assert.Error(t, err)
-		assert.Zero(t, result)
+		s.Error(err)
+		s.Zero(result)
 	})
 
-	t.Run("stop on cancel", func(t *testing.T) {
-		t.Parallel()
-
-		ctx, cancel := context.WithCancel(ctx)
+	s.Run("stop on cancel", func() {
+		ctx, cancel := context.WithCancel(s.Ctx)
 
 		defer cancel()
 
-		pipe := testGen(ctx, numbers)
+		pipe := s.IntPipe(ctx)
 
 		result, err := Accumulate(ctx,
 			func(v int, t int) (int, error) {
@@ -176,19 +194,16 @@ func TestAccumulate(t *testing.T) {
 				return v * t, nil
 			}, 1, pipe)
 
-		assert.Error(t, err)
-		assert.True(t, errors.Is(err, ctx.Err()))
-		assert.NotZero(t, result)
-		assert.Greater(t, expect, result)
+		s.Error(err)
+		s.True(errors.Is(err, ctx.Err()))
+		s.NotZero(result)
+		s.Greater(expected, result)
 	})
 }
 
-func TestCollector(t *testing.T) {
-	t.Parallel()
-
+func (s *PipeTestSuite) TestCollector() {
 	const sliceLen = 5
 
-	ctx := context.Background()
 	sliceCollector := func(_ context.Context, in <-chan int) (
 		r []int, ok bool) {
 		r = make([]int, 0, sliceLen)
@@ -205,31 +220,25 @@ func TestCollector(t *testing.T) {
 		return r, len(r) > 0
 	}
 
-	t.Run("collect to slice", func(t *testing.T) {
-		t.Parallel()
-
-		pipe := Range(ctx, 0, 30)
-		slicesPipe := Collector(ctx, sliceCollector, pipe)
+	s.Run("collect to slice", func() {
+		pipe := Range(s.Ctx, 0, 30)
+		slicesPipe := Collector(s.Ctx, sliceCollector, pipe)
 
 		var first int
 
 		for slice := range slicesPipe {
-			assert.Len(t, slice, sliceLen)
+			s.Len(slice, sliceLen)
 
 			for i, v := range slice {
-				assert.Equal(t, first+i, v)
+				s.Equal(first+i, v)
 			}
 
 			first += sliceLen
 		}
 	})
 
-	t.Run("collect stop", func(t *testing.T) {
-		t.Parallel()
-
-		var cancel context.CancelFunc
-
-		ctx, cancel = context.WithCancel(ctx)
+	s.Run("collect stop", func() {
+		ctx, cancel := context.WithCancel(s.Ctx)
 
 		defer cancel()
 
@@ -237,35 +246,34 @@ func TestCollector(t *testing.T) {
 		slicesPipe := Collector(ctx, sliceCollector, pipe)
 
 		slice, ok := <-slicesPipe
-		assert.True(t, ok)
-		assert.Len(t, slice, sliceLen)
+		s.True(ok)
+		s.Len(slice, sliceLen)
 
 		cancel()
 
 		slice, ok = <-slicesPipe
 		if ok {
-			assert.GreaterOrEqual(t, sliceLen, len(slice))
+			s.GreaterOrEqual(sliceLen, len(slice))
 		}
 
 		_, ok = <-slicesPipe
-		assert.False(t, ok)
+		s.False(ok)
 	})
 }
 
-func TestFilter(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	nums := []int{1, 2, 3, 4, 5}
-	evens := []int{2, 4}
-
+func (s *PipeTestSuite) TestFilter() {
+	evens := make([]int, 0, len(s.Nums)+1)
 	isEven := func(a int) bool { return a%2 == 0 }
 
-	t.Run("accept all", func(t *testing.T) {
-		t.Parallel()
+	for _, val := range s.Nums {
+		if isEven(val) {
+			evens = append(evens, val)
+		}
+	}
 
-		pipe := ToChan(ctx, nums...)
-		filter := Filter(ctx, func(_ int) bool { return true }, pipe)
+	s.Run("accept all", func() {
+		pipe := s.IntPipe(s.Ctx)
+		filter := Filter(s.Ctx, func(_ int) bool { return true }, pipe)
 
 		var result []int
 
@@ -273,15 +281,13 @@ func TestFilter(t *testing.T) {
 			result = append(result, v)
 		}
 
-		assert.Len(t, result, len(nums))
-		assert.Equal(t, result, nums)
+		s.Len(result, len(s.Nums))
+		s.Equal(result, s.Nums)
 	})
 
-	t.Run("accept even", func(t *testing.T) {
-		t.Parallel()
-
-		pipe := ToChan(ctx, nums...)
-		evenc := Filter(ctx, isEven, pipe)
+	s.Run("accept even", func() {
+		pipe := s.IntPipe(s.Ctx)
+		evenc := Filter(s.Ctx, isEven, pipe)
 
 		var result []int
 
@@ -289,141 +295,170 @@ func TestFilter(t *testing.T) {
 			result = append(result, v)
 		}
 
-		assert.Len(t, result, 2)
-		assert.Equal(t, evens, result)
+		s.Len(result, len(evens))
+		s.Equal(evens, result)
 	})
 }
 
-func TestTee(t *testing.T) {
-	t.Parallel()
+func (s *PipeTestSuite) TestLimit() {
+	s.Run("limit n = 0", func() {
+		pipe := s.IntPipe(s.Ctx)
+		limit := Limit(s.Ctx, 0, pipe)
 
-	ctx := context.Background()
-	nums := make([]int, 100)
-
-	for i := range nums {
-		nums[i] = i - 49
-	}
-
-	t.Run("single tee", func(t *testing.T) {
-		t.Parallel()
-
-		pipe := ToChan(ctx, nums...)
-		c1, c2 := Tee(ctx, pipe)
-
-		assert.NotEqual(t, pipe, c1)
-		assert.NotEqual(t, pipe, c2)
-		assert.NotEqual(t, c1, c2)
-
-		testTeeHelper(t, nums, []<-chan int{c1, c2})
+		s.Nil(limit)
 	})
 
-	t.Run("double tee", func(t *testing.T) {
-		t.Parallel()
+	s.Run("limit n = len/2", func() {
+		ctx, cancel := context.WithCancel(s.Ctx)
 
-		pipe := ToChan(ctx, nums...)
-		c1, tee := Tee(ctx, pipe)
-		c2, c3 := Tee(ctx, tee)
+		defer cancel()
 
-		assert.NotEqual(t, pipe, c2)
-		assert.NotEqual(t, pipe, c3)
-		assert.NotEqual(t, c1, c2)
-		assert.NotEqual(t, c1, c2)
-		assert.NotEqual(t, tee, c1)
-		assert.NotEqual(t, tee, c2)
-		assert.NotEqual(t, tee, c3)
+		pipe := s.IntPipe(ctx)
+		limit := Limit(ctx, len(s.Nums)/2, pipe)
 
-		testTeeHelper(t, nums, []<-chan int{c1, c2, c3})
+		result, err := Accumulate(ctx,
+			func(v []int, t int) ([]int, error) {
+				return append(v, t), nil
+			}, nil, limit)
+
+		s.NoError(err)
+		s.Len(result, len(s.Nums)/2)
+		s.Equal(s.Nums[:len(s.Nums)/2], result)
 	})
 
-	t.Run("cancel", func(t *testing.T) {
-		t.Parallel()
+	s.Run("limit n = len*2", func() {
+		pipe := s.IntPipe(s.Ctx)
+		limit := Limit(s.Ctx, len(s.Nums)*2, pipe)
 
-		testTeeCancel(t, len(nums), 0, time.Microsecond)
-		testTeeCancel(t, len(nums), time.Microsecond, 0)
+		result, err := Accumulate(s.Ctx,
+			func(v []int, t int) ([]int, error) {
+				return append(v, t), nil
+			}, nil, limit)
+
+		s.NoError(err)
+		s.Len(result, len(s.Nums))
+		s.Equal(s.Nums, result)
+	})
+
+	s.Run("cancel", func() {
+		ctx, cancel := context.WithCancel(s.Ctx)
+
+		defer cancel()
+
+		pipe := s.IntPipe(ctx)
+		limit := Limit(ctx, len(s.Nums)/2, pipe)
+
+		var result []int
+
+		for val := range limit {
+			result = append(result, val)
+
+			if len(result) >= len(s.Nums)/4 {
+				cancel()
+			}
+		}
+
+		s.Len(result, len(s.Nums)/4)
+		s.Equal(s.Nums[:len(s.Nums)/4], result)
 	})
 }
 
-func TestSplit(t *testing.T) {
-	t.Parallel()
+func (s *PipeTestSuite) TestMerge() {}
 
-	ctx := context.Background()
-	nums := make([]int, 100)
+func (s *PipeTestSuite) TestTee() {
+	s.Run("single tee", func() {
+		pipe := s.IntPipe(s.Ctx)
+		c1, c2 := Tee(s.Ctx, pipe)
 
-	for i := range nums {
-		nums[i] = i - 49
-	}
+		s.NotEqual(pipe, c1)
+		s.NotEqual(pipe, c2)
+		s.NotEqual(c1, c2)
 
-	t.Run("split 1", func(t *testing.T) {
-		t.Parallel()
+		testTeeHelper(&s.Suite, s.Nums, []<-chan int{c1, c2})
+	})
 
+	s.Run("double tee", func() {
+		pipe := s.IntPipe(s.Ctx)
+		c1, tee := Tee(s.Ctx, pipe)
+		c2, c3 := Tee(s.Ctx, tee)
+
+		s.NotEqual(pipe, c2)
+		s.NotEqual(pipe, c3)
+		s.NotEqual(c1, c2)
+		s.NotEqual(c1, c2)
+		s.NotEqual(tee, c1)
+		s.NotEqual(tee, c2)
+		s.NotEqual(tee, c3)
+
+		testTeeHelper(&s.Suite, s.Nums, []<-chan int{c1, c2, c3})
+	})
+
+	s.Run("cancel", func() {
+		testTeeCancel(&s.Suite, len(s.Nums), 0, time.Microsecond)
+		testTeeCancel(&s.Suite, len(s.Nums), time.Microsecond, 0)
+	})
+}
+
+func (s *PipeTestSuite) TestSplit() {
+	s.Run("split 1", func() {
 		const n = 1
 
-		pipe := ToChan(ctx, nums...)
-		split := Split(ctx, pipe, n)
-		assert.Len(t, split, n)
-		assert.Equal(t, pipe, split[0])
+		pipe := s.IntPipe(s.Ctx)
+		split := Split(s.Ctx, pipe, n)
+		s.Len(split, n)
+		s.Equal(pipe, split[0])
 
-		testTeeHelper(t, nums, split)
+		testTeeHelper(&s.Suite, s.Nums, split)
 	})
 
-	t.Run("split 2", func(t *testing.T) {
-		t.Parallel()
-
+	s.Run("split 2", func() {
 		const n = 2
 
-		pipe := ToChan(ctx, nums...)
-		split := Split(ctx, pipe, n)
-		assert.Len(t, split, n)
-		assert.NotEqual(t, pipe, split[0])
+		pipe := s.IntPipe(s.Ctx)
+		split := Split(s.Ctx, pipe, n)
+		s.Len(split, n)
 
-		testTeeHelper(t, nums, split)
+		for i := range split {
+			s.NotEqual(pipe, split[i])
+		}
+
+		testTeeHelper(&s.Suite, s.Nums, split)
 	})
 
-	t.Run("split 5", func(t *testing.T) {
-		t.Parallel()
-
+	s.Run("split 5", func() {
 		const n = 5
 
-		pipe := ToChan(ctx, nums...)
-		split := Split(ctx, pipe, n)
-		assert.Len(t, split, n)
+		pipe := s.IntPipe(s.Ctx)
+		split := Split(s.Ctx, pipe, n)
+		s.Len(split, n)
 
-		testTeeHelper(t, nums, split)
+		for i := range split {
+			s.NotEqual(pipe, split[i])
+		}
+
+		testTeeHelper(&s.Suite, s.Nums, split)
 	})
 }
 
-func TestSpread(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	nums := make([]int, 100)
-
-	for i := range nums {
-		nums[i] = i - len(nums)/2 + 1
-	}
-
-	t.Run("spread 1", func(t *testing.T) {
-		t.Parallel()
-
+func (s *PipeTestSuite) TestSpread() {
+	s.Run("spread 1", func() {
 		const n = 1
 
-		pipe := ToChan(ctx, nums...)
-		spread := Spread(ctx, pipe, n)
-		assert.Len(t, spread, n)
-		assert.Equal(t, pipe, spread[0])
+		pipe := s.IntPipe(s.Ctx)
+		spread := Spread(s.Ctx, pipe, n)
+		s.Len(spread, n)
+		s.Equal(pipe, spread[0])
 
-		testTeeHelper(t, nums, spread)
+		testTeeHelper(&s.Suite, s.Nums, spread)
 	})
 
-	t.Run("spread 5", func(t *testing.T) {
-		t.Parallel()
-
+	s.Run("spread 5", func() {
 		const n = 5
 
-		pipe := ToChan(ctx, nums...)
-		spread := Spread(ctx, pipe, n)
-		assert.Len(t, spread, n)
-		assert.NotEqual(t, pipe, spread[0])
+		pipe := s.IntPipe(s.Ctx)
+		spread := Spread(s.Ctx, pipe, n)
+		s.Len(spread, n)
+		s.NotEqual(pipe, spread[0])
 
 		r := make([][]int, n)
 
@@ -436,18 +471,17 @@ func TestSpread(t *testing.T) {
 
 		wg.Wait()
 
-		result := make([]int, 0, len(nums))
+		result := make([]int, 0, len(s.Nums))
 
 		for _, slice := range r {
-			assert.Greater(t, len(slice), 0)
-			assert.Less(t, len(slice), len(nums))
+			s.Greater(len(slice), 0)
+			s.Less(len(slice), len(s.Nums))
 
 			result = append(result, slice...)
 		}
 
 		sort.Ints(result)
 
-		assert.Equal(t, nums, result)
+		s.Equal(s.Nums, result)
 	})
-
 }
