@@ -33,6 +33,7 @@ func Map[T, V any](ctx context.Context, mapFn func(T) V, input <-chan T) (
 	return c
 }
 
+// OrDone returns a channel that checks if the given Context is Done.
 func OrDone[T any](ctx context.Context, in <-chan T) <-chan T {
 	return Map(ctx, func(t T) T { return t }, in)
 }
@@ -53,7 +54,7 @@ func Filter[T any](ctx context.Context, filter func(T) bool, input <-chan T) (
 	return Collector(ctx, collect, input)
 }
 
-// Limit
+// Limit limits the channel capacity.
 func Limit[T any](ctx context.Context, n int, input <-chan T) <-chan T {
 	if n == 0 {
 		return nil
@@ -83,6 +84,7 @@ func Limit[T any](ctx context.Context, n int, input <-chan T) <-chan T {
 	return c
 }
 
+// Accumulate accumulates data from a given channel.
 func Accumulate[T, V any](ctx context.Context, fn func(V, T) (V, error),
 	initVal V, input <-chan T) (out V, err error) {
 	out = initVal
@@ -93,9 +95,17 @@ func Accumulate[T, V any](ctx context.Context, fn func(V, T) (V, error),
 		}
 	}
 
-	return out, ErrorIfDone(ctx)
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+	default:
+	}
+
+	return out, err
 }
 
+// Collector accumulates data from a given channel to some intermediate
+// structure, e.g. slice or structure, and returns it as a new channel.
 func Collector[T, V any](ctx context.Context,
 	collect func(context.Context, <-chan T) (V, bool), input <-chan T) (
 	output <-chan V) {
@@ -122,6 +132,8 @@ func Collector[T, V any](ctx context.Context,
 	return c
 }
 
+// Merge creates a new input channel that returns the content of all the given
+// channels.
 func Merge[T any](ctx context.Context, chans ...<-chan T) <-chan T {
 	switch len(chans) {
 	case 0:
@@ -156,15 +168,7 @@ func Merge[T any](ctx context.Context, chans ...<-chan T) <-chan T {
 	return c
 }
 
-func ErrorIfDone(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-		return nil
-	}
-}
-
+// Spread returns n channels. Every channel partially repeats an input channel.
 func Spread[T any](ctx context.Context, in <-chan T, num int) (out []<-chan T) {
 	if num == 1 {
 		return []<-chan T{in}
@@ -179,6 +183,7 @@ func Spread[T any](ctx context.Context, in <-chan T, num int) (out []<-chan T) {
 	return out
 }
 
+// Split returns n channels that repeat an input channel.
 func Split[T any](ctx context.Context, input <-chan T, n int) (out []<-chan T) {
 	const teeNum = 2
 
@@ -199,6 +204,7 @@ func Split[T any](ctx context.Context, input <-chan T, n int) (out []<-chan T) {
 	return
 }
 
+// Tee creates two channels that repeat an input channel.
 func Tee[T any](ctx context.Context, input <-chan T) (out1, out2 <-chan T) {
 	c1 := make(chan T)
 	c2 := make(chan T)
