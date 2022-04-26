@@ -1,9 +1,10 @@
-package pipeline
+package pipeline_test
 
 import (
 	"context"
 	"testing"
 
+	. "github.com/denisss025/go-async/pipeline"
 	"github.com/stretchr/testify/assert"
 )
 

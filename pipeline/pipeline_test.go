@@ -1,4 +1,4 @@
-package pipeline
+package pipeline_test
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/denisss025/go-async/pipeline"
 	"github.com/stretchr/testify/suite"
 )
 
