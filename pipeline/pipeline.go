@@ -122,7 +122,14 @@ func Collector[T, V any](ctx context.Context,
 	return c
 }
 
-func Merge[T any](chans ...<-chan T) <-chan T {
+func Merge[T any](ctx context.Context, chans ...<-chan T) <-chan T {
+	switch len(chans) {
+	case 0:
+		return nil
+	case 1:
+		return chans[0]
+	}
+
 	c := make(chan T)
 
 	wg := new(sync.WaitGroup)
@@ -137,7 +144,7 @@ func Merge[T any](chans ...<-chan T) <-chan T {
 	}
 
 	for i := range chans {
-		go fanout(wg, chans[i], c)
+		go fanout(wg, OrDone(ctx, chans[i]), c)
 	}
 
 	go func(wg *sync.WaitGroup, ch chan<- T) {

@@ -363,7 +363,51 @@ func (s *PipeTestSuite) TestLimit() {
 	})
 }
 
-func (s *PipeTestSuite) TestMerge() {}
+func (s *PipeTestSuite) TestMerge() {
+	s.Run("zero and single channels", func() {
+		merge := Merge[int](s.Ctx)
+		s.Nil(merge)
+
+		pipe := s.IntPipe(s.Ctx)
+		merge = Merge(s.Ctx, pipe)
+
+		s.Equal(pipe, merge)
+
+		merge = Merge(s.Ctx, pipe, pipe, pipe)
+
+		result, err := Accumulate(s.Ctx,
+			func(v []int, t int) ([]int, error) {
+				return append(v, t), nil
+			}, nil, merge)
+
+		s.NoError(err)
+		s.Len(result, len(s.Nums))
+
+		sort.Ints(result)
+		s.Equal(s.Nums, result)
+	})
+
+	s.Run("multiple channels", func() {
+		n := len(s.Nums) / 4
+
+		pipe1 := ToChan(s.Ctx, s.Nums[:n]...)
+		pipe2 := ToChan(s.Ctx, s.Nums[n:]...)
+
+		pipe := Merge(s.Ctx, pipe1, pipe2)
+
+		result, err := Accumulate(s.Ctx,
+			func(v []int, t int) ([]int, error) {
+				return append(v, t), nil
+			}, nil, pipe)
+
+		s.NoError(err)
+		s.Len(result, len(s.Nums))
+		s.NotEqual(s.Nums, result)
+
+		sort.Ints(result)
+		s.Equal(s.Nums, result)
+	})
+}
 
 func (s *PipeTestSuite) TestTee() {
 	s.Run("single tee", func() {
