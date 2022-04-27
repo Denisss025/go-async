@@ -2,6 +2,9 @@ package pipeline
 
 import "context"
 
+// Generate sends to an output channel the results of function gen call.
+// It closes the channel either when function gen returns false or when
+// the context is done.
 func Generate[T any](ctx context.Context, gen func(context.Context) (T, bool)) (
 	output <-chan T) {
 	c := make(chan T)
@@ -27,12 +30,19 @@ func Generate[T any](ctx context.Context, gen func(context.Context) (T, bool)) (
 	return c
 }
 
+// ToChan creates a channel and sends all the values into it.
 func ToChan[T any](ctx context.Context, values ...T) <-chan T {
+	return SliceToChan(ctx, values)
+}
+
+// SliceToChan creates a channel and sends all the values of a given slice
+// into it.
+func SliceToChan[T any](ctx context.Context, slice []T) <-chan T {
 	var i int
 
 	return Generate(ctx, func(_ context.Context) (v T, ok bool) {
-		if ok = i < len(values); ok {
-			v = values[i]
+		if ok = i < len(slice); ok {
+			v = slice[i]
 		}
 
 		i++
@@ -41,10 +51,13 @@ func ToChan[T any](ctx context.Context, values ...T) <-chan T {
 	})
 }
 
+// Rangeable is an interface for all the signed numbers, i.e. ints and floats.
 type Rangeable interface {
 	~int8 | ~int16 | ~int32 | ~int64 | ~int | ~float32 | ~float64
 }
 
+// Range creates a channel that returns sequence of numbers with a given step.
+// Panics when the step does not allow to reach the last value without overflow.
 func Range[T Rangeable](ctx context.Context, from, to T, optStep ...T) (
 	output <-chan T) {
 	var step T = 1
