@@ -11,10 +11,12 @@ type futureResult[T any] struct {
 	Err error
 }
 
+// Future provides a mechanism to access the result of asynchronous operations.
 type Future[T any] struct {
 	result <-chan futureResult[T]
 }
 
+// Await returns the result of the asynchronous operation.
 func (f *Future[T]) Await(ctx context.Context) (v T, err error) {
 	select {
 	case <-ctx.Done():
@@ -26,6 +28,8 @@ func (f *Future[T]) Await(ctx context.Context) (v T, err error) {
 	return v, err
 }
 
+// Exec runs function fn asynchronously and returns a Future that will
+// eventually hold the result of that function call.
 func Exec[T any](ctx context.Context, fn func(context.Context) (T, error)) (
 	future *Future[T]) {
 	return &Future[T]{
@@ -38,6 +42,8 @@ func Exec[T any](ctx context.Context, fn func(context.Context) (T, error)) (
 	}
 }
 
+// Then waits for the first task to be done and runs function next with the
+// result of the first task as an argument.
 func Then[T, V any](ctx context.Context, first *Future[T],
 	next func(context.Context, T) (V, error)) *Future[V] {
 	return &Future[V]{
