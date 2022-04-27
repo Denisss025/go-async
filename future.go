@@ -28,6 +28,14 @@ func (f *Future[T]) Await(ctx context.Context) (v T, err error) {
 	return v, err
 }
 
+// Then returns a new Future that waits for the result of the asynchronous
+// operation of the current Future and asynchronously handles the result
+// of the next function.
+func (f *Future[T]) Then(ctx context.Context,
+	next func(context.Context, T) (T, error)) *Future[T] {
+	return Then(ctx, f, next)
+}
+
 // Exec runs function fn asynchronously and returns a Future that will
 // eventually hold the result of that function call.
 func Exec[T any](ctx context.Context, fn func(context.Context) (T, error)) (
