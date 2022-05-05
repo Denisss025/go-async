@@ -30,6 +30,28 @@ func Generate[T any](ctx context.Context, gen func(context.Context) (T, bool)) (
 	return c
 }
 
+// Unroll takes a channel of slices and sends values of income slices
+// to a new channel.
+func Unroll[T any](ctx context.Context, in <-chan []T) <-chan T {
+	c := make(chan T)
+
+	go func(ctx context.Context, out chan<- T, in <-chan []T) {
+		defer close(out)
+
+		for arr := range in {
+			for _, val := range arr {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- val:
+				}
+			}
+		}
+	}(ctx, c, OrDone(ctx, in))
+
+	return c
+}
+
 // ToChan creates a channel and sends all the values into it.
 func ToChan[T any](ctx context.Context, values ...T) <-chan T {
 	return SliceToChan(ctx, values)
